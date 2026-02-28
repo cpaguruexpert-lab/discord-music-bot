@@ -44,7 +44,6 @@ async def debug(ctx):
     msg += f"✅ Bot Online: YES\n"
     msg += f"📡 Latency: {round(bot.latency * 1000)}ms\n"
     
-    # Check voice status
     if ctx.voice_client:
         msg += f"🔊 In Voice: YES (Channel: {ctx.voice_client.channel.name})\n"
         if ctx.voice_client.is_playing():
@@ -56,13 +55,11 @@ async def debug(ctx):
     else:
         msg += f"🔊 In Voice: NO\n"
     
-    # Check queue
     if ctx.guild.id in queues and queues[ctx.guild.id]:
         msg += f"📋 Queue: {len(queues[ctx.guild.id])} songs\n"
     else:
         msg += f"📋 Queue: EMPTY\n"
     
-    # Check user voice
     if ctx.author.voice:
         msg += f"👤 You are in: {ctx.author.voice.channel.name}\n"
     else:
@@ -99,36 +96,56 @@ async def play(ctx, *, query):
     await ctx.send(f"🔍 Searching for: **{query}**")
     
     try:
-        # Test yt-dlp
         await ctx.send("🔄 Extracting audio...")
         
+        # FIXED: Format the search query properly for yt-dlp
+        if not query.startswith('http'):
+            # This is a search query, not a URL
+            search_query = f"ytsearch:{query}"
+        else:
+            search_query = query
+        
         ytdl_opts = {
-            'format': 'bestaudio',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
+            'default_search': 'ytsearch',
+            'source_address': '0.0.0.0',
         }
         
         loop = asyncio.get_event_loop()
         
         with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
             try:
-                info = await loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
+                # Extract info
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
+                
+                # Handle search results
                 if 'entries' in info:
+                    # Get the first search result
                     info = info['entries'][0]
                 
                 url = info['url']
                 title = info.get('title', 'Unknown')
+                duration = info.get('duration', 0)
                 
-                await ctx.send(f"✅ Found: **{title}**")
+                # Format duration
+                minutes = duration // 60
+                seconds = duration % 60
+                duration_str = f"{minutes}:{seconds:02d}"
                 
-                # Create audio source
+                await ctx.send(f"✅ Found: **{title}** ({duration_str})")
+                
+                # FFmpeg options
                 ffmpeg_opts = {
                     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                     'options': '-vn'
                 }
+                
+                # Create audio source
                 source = discord.FFmpegPCMAudio(url, **ffmpeg_opts)
                 
-                # Add to queue
+                # Add to queue with title
                 queues[ctx.guild.id].append((source, title))
                 await ctx.send(f"✅ Added to queue: **{title}**")
                 
@@ -137,10 +154,11 @@ async def play(ctx, *, query):
                     await play_next(ctx)
                     
             except Exception as e:
-                await ctx.send(f"❌ yt-dlp error: {str(e)[:100]}")
+                await ctx.send(f"❌ yt-dlp error: {str(e)[:200]}")
+                print(f"Full error: {e}")
                 
     except Exception as e:
-        await ctx.send(f"❌ General error: {str(e)[:100]}")
+        await ctx.send(f"❌ General error: {str(e)[:200]}")
 
 async def play_next(ctx):
     """Play next in queue"""
@@ -157,6 +175,45 @@ async def play_next(ctx):
     
     ctx.voice_client.play(source, after=after_playing)
     await ctx.send(f"🎵 **Now Playing:** {title}")
+
+@bot.command(name='skip', aliases=['s'])
+async def skip(ctx):
+    """Skip current song"""
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭️ Skipped")
+    else:
+        await ctx.send("❌ Nothing to skip")
+
+@bot.command(name='pause')
+async def pause(ctx):
+    """Pause current song"""
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸️ Paused")
+    else:
+        await ctx.send("❌ Nothing playing")
+
+@bot.command(name='resume')
+async def resume(ctx):
+    """Resume paused song"""
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Resumed")
+    else:
+        await ctx.send("❌ Nothing paused")
+
+@bot.command(name='queue', aliases=['q'])
+async def queue(ctx):
+    """Show queue"""
+    if ctx.guild.id in queues and queues[ctx.guild.id]:
+        queue_list = queues[ctx.guild.id]
+        queue_text = "\n".join([f"`{i+1}.` {title}" for i, (_, title) in enumerate(queue_list[:10])])
+        if len(queue_list) > 10:
+            queue_text += f"\n`... and {len(queue_list) - 10} more`"
+        await ctx.send(f"**📋 Queue:**\n{queue_text}")
+    else:
+        await ctx.send("📋 Queue is empty")
 
 @bot.command(name='stop')
 async def stop(ctx):
